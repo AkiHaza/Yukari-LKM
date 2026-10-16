@@ -1,0 +1,9 @@
+config YUKARI_FILTER
+	tristate "Yukari per-caller Binder service-view probe"
+	depends on KRETPROBES
+	default m
+	help
+	  Build the optional Yukari Binder ioctl return probe.  This module is
+	  observational and fail-open; it does not include a vendor Binder reply
+	  rewrite integration.  A separately patched driver or framework is needed
+	  for reply filtering.

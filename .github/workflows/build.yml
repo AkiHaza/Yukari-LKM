@@ -1,0 +1,53 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_workspace:
+        description: Absolute path to the matching Android 14/GKI 6.1 Kleaf workspace
+        required: true
+        type: string
+      kernel_build_label:
+        description: Bazel kernel_build label for the exact target image
+        required: true
+        type: string
+      kernel_headers_label:
+        description: Bazel all_headers label exported by the matching kernel workspace
+        required: false
+        default: //common:all_headers
+        type: string
+      ndk:
+        description: Absolute path to the Android NDK
+        required: true
+        type: string
+      magisk_include:
+        description: Absolute path to Magisk headers containing zygisk.hpp
+        required: true
+        type: string
+      bazel:
+        description: Optional Bazel/Kleaf wrapper executable; blank uses tools/bazel in the workspace
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  build:
+    # The runner must already contain the exact Android 14 DDK/Kleaf workspace,
+    # matching GKI 6.1 kernel target, NDK and Magisk headers.
+    runs-on: [self-hosted, linux, android-ddk]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Yukari module
+        env:
+          KERNEL_WORKSPACE: ${{ inputs.kernel_workspace }}
+          KERNEL_BUILD_LABEL: ${{ inputs.kernel_build_label }}
+          KERNEL_HEADERS_LABEL: ${{ inputs.kernel_headers_label }}
+          ANDROID_NDK_HOME: ${{ inputs.ndk }}
+          MAGISK_INCLUDE: ${{ inputs.magisk_include }}
+          BAZEL: ${{ inputs.bazel }}
+        run: ./build/build.sh
+      - name: Upload module
+        uses: actions/upload-artifact@v4
+        with:
+          name: yukari-service-filter
+          path: out/yukari-service-filter.zip

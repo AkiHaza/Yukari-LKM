@@ -1,0 +1,14 @@
+load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
+
+package(default_visibility = ["//visibility:public"])
+
+# build/build.sh stages this package into the matching Kleaf workspace and
+# substitutes the requested kernel_build label before invoking Bazel.
+ddk_module(
+    name = "yukari_filter",
+    srcs = ["yukari_filter.c"],
+    kconfig = "Kconfig",
+    out = "yukari_filter.ko",
+    kernel_build = "//common:kernel_aarch64",
+    deps = ["//common:all_headers"],
+)

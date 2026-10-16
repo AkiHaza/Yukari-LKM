@@ -1,0 +1,7 @@
+id=yukari-service-filter
+name=Yukari ServiceManager view filter
+version=0.1.0
+versionCode=1
+author=Yukari-LKM
+description=Per-process filtering of ROM-specific ServiceManager entries
+
