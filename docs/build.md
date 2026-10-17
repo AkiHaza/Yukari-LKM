@@ -34,41 +34,48 @@ file. The generated ZIP is `OUT_DIR/yukari-service-filter.zip`.
 
 ## GitHub Actions
 
-The repository workflow runs on a self-hosted runner with the labels
-`self-hosted`, `linux`, and `android-ddk`. It uses the same `build/build.sh`
-entry point. Configure these repository Variables once, or export the matching
-`YUKARI_*` variables in the runner service environment:
+The repository workflow runs on a GitHub-hosted `ubuntu-24.04` runner and uses
+the same `build/build.sh` entry point. It prepares an Android 14/GKI 6.1 Kleaf
+workspace from the Android kernel manifest, installs the requested Android NDK,
+downloads the pinned Magisk `zygisk.hpp`, and then builds the module.
+
+The following repository Variables are optional overrides. The workflow has
+defaults for all of them, so an empty `workflow_dispatch` run uses the public
+Android 14/GKI 6.1 common manifest:
 
 | Variable | Required | Value |
 | --- | --- | --- |
-| `YUKARI_KERNEL_WORKSPACE` | yes | Absolute path to the Android 14/GKI 6.1 Kleaf workspace |
-| `YUKARI_KERNEL_BUILD_LABEL` | yes | Exact device `kernel_build` Bazel label |
+| `YUKARI_KERNEL_MANIFEST_URL` | no | HTTPS manifest URL; defaults to `https://android.googlesource.com/kernel/manifest` |
+| `YUKARI_KERNEL_MANIFEST_REF` | no | Manifest branch; defaults to `common-android14-6.1` |
+| `YUKARI_KERNEL_BUILD_LABEL` | no | Exact label; defaults to `//common:kernel_aarch64` |
 | `YUKARI_KERNEL_HEADERS_LABEL` | no | Headers label; defaults to `//common:all_headers` |
-| `YUKARI_ANDROID_NDK_HOME` | yes | Absolute Android NDK directory containing `ndk-build` |
-| `YUKARI_MAGISK_INCLUDE` | yes | Absolute include directory containing `zygisk.hpp` |
-| `YUKARI_BAZEL` | no | Bazel wrapper; empty selects workspace `tools/bazel`, then `PATH` |
+| `YUKARI_NDK_VERSION` | no | SDK NDK version; defaults to `26.3.11579264` |
+| `YUKARI_MAGISK_ZYGISK_URL` | no | HTTPS URL for `zygisk.hpp`; defaults to Magisk `v28.1` |
+| `YUKARI_MAGISK_ZYGISK_SHA256` | no | Optional 64-character SHA-256 for the downloaded header |
 | `YUKARI_ABIS` | no | Comma-separated ABIs; defaults to `arm64-v8a` |
 
 `workflow_dispatch` inputs are optional overrides and take precedence over
-repository Variables, which take precedence over runner environment variables.
-The workflow performs a preflight check for every required path, the Kleaf
-workspace marker, Bazel, the NDK compiler, and `zygisk.hpp` before invoking the
-build. No firmware-specific paths or kernel labels are invented by the
-workflow; the exact values must match the device image.
+repository Variables. The workflow downloads the `repo` tool, syncs the
+selected manifest, verifies the workspace marker and requested Bazel labels,
+and checks `ndk-build` and `zygisk.hpp` before invoking the build. The default
+labels target AOSP common GKI; a device-specific kernel requires matching
+manifest/ref and labels supplied through inputs or Variables.
 
 For example, repository Variables can be set with the GitHub CLI from a
-trusted machine (replace the values with the runner's real paths):
+trusted machine when building a device-specific kernel:
 
 ```sh
-gh variable set YUKARI_KERNEL_WORKSPACE --body /opt/android/gki-6.1
+gh variable set YUKARI_KERNEL_MANIFEST_URL --body https://android.googlesource.com/kernel/manifest
+gh variable set YUKARI_KERNEL_MANIFEST_REF --body common-android14-6.1
 gh variable set YUKARI_KERNEL_BUILD_LABEL --body //common:kernel_aarch64
-gh variable set YUKARI_ANDROID_NDK_HOME --body /opt/android-ndk
-gh variable set YUKARI_MAGISK_INCLUDE --body /opt/magisk/include
+gh variable set YUKARI_NDK_VERSION --body 26.3.11579264
 ```
 
-The local checkout in this repository does not contain a Linux Kleaf/NDK
-toolchain, so a successful GitHub Actions run still requires a registered
-`android-ddk` runner with those dependencies installed.
+The local Windows checkout does not contain the cloud dependencies, so the
+workflow itself must be run on GitHub Actions to validate the remote manifest,
+NDK download, and full Kleaf build. Standard hosted runners have finite disk
+space; a larger runner may be needed if the selected kernel manifest produces
+large generated outputs.
 
 The kernel module is intentionally fail-open on an unmodified GKI image. A
 successful build verifies compilation and packaging only; it does not provide

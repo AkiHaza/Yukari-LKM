@@ -3,49 +3,43 @@ name: build
 on:
   workflow_dispatch:
     inputs:
-      kernel_workspace:
-        description: >-
-          Optional override for the Android 14/GKI 6.1 Kleaf workspace. Uses
-          YUKARI_KERNEL_WORKSPACE when empty.
+      kernel_manifest_url:
+        description: Kernel manifest URL (Android 14/GKI 6.1 by default)
+        required: false
+        default: ''
+        type: string
+      kernel_manifest_ref:
+        description: Manifest branch or tag (common-android14-6.1 by default)
         required: false
         default: ''
         type: string
       kernel_build_label:
-        description: >-
-          Optional override for the device kernel_build label. Uses
-          YUKARI_KERNEL_BUILD_LABEL when empty.
+        description: Bazel kernel_build label for the selected manifest
         required: false
         default: ''
         type: string
       kernel_headers_label:
-        description: >-
-          Optional all_headers label override. Defaults to //common:all_headers.
+        description: Bazel all_headers label for the selected manifest
         required: false
         default: ''
         type: string
-      ndk:
-        description: >-
-          Optional Android NDK directory override. Uses YUKARI_ANDROID_NDK_HOME
-          when empty.
+      ndk_version:
+        description: Android SDK NDK version (26.3.11579264 by default)
         required: false
         default: ''
         type: string
-      magisk_include:
-        description: >-
-          Optional Magisk include directory override. Uses YUKARI_MAGISK_INCLUDE
-          when empty.
+      magisk_zygisk_url:
+        description: Raw URL for the pinned Magisk zygisk.hpp header
         required: false
         default: ''
         type: string
-      bazel:
-        description: >-
-          Optional Bazel/Kleaf wrapper override. Empty selects workspace tools/bazel
-          and then PATH.
+      magisk_zygisk_sha256:
+        description: Optional SHA-256 for zygisk.hpp (64 hex characters)
         required: false
         default: ''
         type: string
       abis:
-        description: Optional comma-separated Android ABIs. Defaults to arm64-v8a.
+        description: Comma-separated Android ABIs (arm64-v8a by default)
         required: false
         default: ''
         type: string
@@ -55,125 +49,187 @@ permissions:
 
 jobs:
   build:
-    # This label is intentional: the runner must have the matching Kleaf/DDK
-    # workspace, Android NDK, and Magisk headers preinstalled.
-    runs-on: [self-hosted, linux, android-ddk]
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     env:
-      # Inputs override repository variables. Empty values are resolved in the
-      # preflight step, which can also use environment variables on the runner.
-      KERNEL_WORKSPACE: ${{ inputs.kernel_workspace || vars.YUKARI_KERNEL_WORKSPACE || '' }}
+      # Dispatch values override repository Variables. Empty values are filled
+      # by the preparation step with reproducible Android 14/GKI 6.1 defaults.
+      KERNEL_MANIFEST_URL: ${{ inputs.kernel_manifest_url || vars.YUKARI_KERNEL_MANIFEST_URL || '' }}
+      KERNEL_MANIFEST_REF: ${{ inputs.kernel_manifest_ref || vars.YUKARI_KERNEL_MANIFEST_REF || '' }}
       KERNEL_BUILD_LABEL: ${{ inputs.kernel_build_label || vars.YUKARI_KERNEL_BUILD_LABEL || '' }}
       KERNEL_HEADERS_LABEL: ${{ inputs.kernel_headers_label || vars.YUKARI_KERNEL_HEADERS_LABEL || '' }}
-      ANDROID_NDK_HOME: ${{ inputs.ndk || vars.YUKARI_ANDROID_NDK_HOME || '' }}
-      MAGISK_INCLUDE: ${{ inputs.magisk_include || vars.YUKARI_MAGISK_INCLUDE || '' }}
-      BAZEL: ${{ inputs.bazel || vars.YUKARI_BAZEL || '' }}
+      NDK_VERSION: ${{ inputs.ndk_version || vars.YUKARI_NDK_VERSION || '' }}
+      MAGISK_ZYGISK_URL: ${{ inputs.magisk_zygisk_url || vars.YUKARI_MAGISK_ZYGISK_URL || '' }}
+      MAGISK_ZYGISK_SHA256: ${{ inputs.magisk_zygisk_sha256 || vars.YUKARI_MAGISK_ZYGISK_SHA256 || '' }}
       ABIS: ${{ inputs.abis || vars.YUKARI_ABIS || '' }}
     steps:
-      - name: Checkout
+      - name: Checkout Yukari-LKM
         uses: actions/checkout@v4
 
-      - name: Validate build inputs
+      - name: Install host build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl device-tree-compiler dwarves \
+            flex git kmod libelf-dev libncurses-dev libssl-dev lld clang llvm \
+            python3 rsync unzip zip
+          # Remove unused preinstalled SDK images so the kernel checkout has
+          # room on the standard GitHub-hosted runner disk.
+          if [ -n "${ANDROID_HOME:-}" ]; then
+            sudo rm -rf "$ANDROID_HOME/system-images" || true
+          fi
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ndk_version="${NDK_VERSION:-26.3.11579264}"
+          case "$ndk_version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "Invalid NDK version: $ndk_version" >&2; exit 2 ;;
+          esac
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "ndk;$ndk_version"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          [ -n "$sdk_root" ] || { echo "Android SDK root was not set" >&2; exit 2; }
+          ndk_home="$sdk_root/ndk/$ndk_version"
+          [ -x "$ndk_home/ndk-build" ] || { echo "ndk-build missing: $ndk_home/ndk-build" >&2; exit 2; }
+          {
+            printf 'ANDROID_SDK_ROOT=%s\n' "$sdk_root"
+            printf 'ANDROID_NDK_HOME=%s\n' "$ndk_home"
+            printf 'NDK_VERSION=%s\n' "$ndk_version"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+
+      - name: Prepare kernel Kleaf workspace
         shell: bash
         run: |
           set -Eeuo pipefail
 
           fail() {
-            echo "CI preflight: $*" >&2
+            echo "Kernel preparation: $*" >&2
             exit 2
           }
 
-          # The runner environment is the third configuration source. This is
-          # useful when the same self-hosted runner serves several repositories.
-          first_non_empty() {
-            if [ -n "${1:-}" ]; then
-              printf '%s' "$1"
-            else
-              printf '%s' "${2:-}"
-            fi
-          }
+          manifest_url="${KERNEL_MANIFEST_URL:-https://android.googlesource.com/kernel/manifest}"
+          manifest_ref="${KERNEL_MANIFEST_REF:-common-android14-6.1}"
+          kernel_build_label="${KERNEL_BUILD_LABEL:-//common:kernel_aarch64}"
+          kernel_headers_label="${KERNEL_HEADERS_LABEL:-//common:all_headers}"
 
-          kernel_workspace=$(first_non_empty "${KERNEL_WORKSPACE:-}" "${YUKARI_KERNEL_WORKSPACE:-}")
-          kernel_build_label=$(first_non_empty "${KERNEL_BUILD_LABEL:-}" "${YUKARI_KERNEL_BUILD_LABEL:-}")
-          kernel_headers_label=$(first_non_empty "${KERNEL_HEADERS_LABEL:-}" "${YUKARI_KERNEL_HEADERS_LABEL:-//common:all_headers}")
-          ndk=$(first_non_empty "${ANDROID_NDK_HOME:-}" "${YUKARI_ANDROID_NDK_HOME:-}")
-          magisk_include=$(first_non_empty "${MAGISK_INCLUDE:-}" "${YUKARI_MAGISK_INCLUDE:-}")
-          bazel=$(first_non_empty "${BAZEL:-}" "${YUKARI_BAZEL:-}")
-          abis=$(first_non_empty "${ABIS:-}" "${YUKARI_ABIS:-arm64-v8a}")
-
-          for value in "$kernel_workspace" "$kernel_build_label" "$kernel_headers_label" \
-            "$ndk" "$magisk_include" "$bazel" "$abis"; do
-            case "$value" in
-              *$'\n'*|*$'\r'*) fail "CI input contains a newline; refusing to write it to GITHUB_ENV" ;;
-            esac
-          done
-
-          validate_label() {
-            local name=$1
-            local value=$2
-            [[ "$value" =~ ^//[A-Za-z0-9_./:-]+$ ]] || \
-              fail "$name must contain only Bazel label characters and begin with //: $value"
-          }
-
-          [ -n "$kernel_workspace" ] || fail "KERNEL_WORKSPACE is unset; configure vars.YUKARI_KERNEL_WORKSPACE or runner env YUKARI_KERNEL_WORKSPACE"
-          case "$kernel_workspace" in
-            /*) ;;
-            *) fail "KERNEL_WORKSPACE must be an absolute Linux path: $kernel_workspace" ;;
+          case "$manifest_url" in
+            *$'\n'*|*$'\r'*|*' '*) fail "KERNEL_MANIFEST_URL contains whitespace" ;;
+            https://*) ;;
+            *) fail "KERNEL_MANIFEST_URL must use HTTPS: $manifest_url" ;;
           esac
-          [ -d "$kernel_workspace" ] || fail "KERNEL_WORKSPACE does not exist: $kernel_workspace"
-          if [ ! -f "$kernel_workspace/MODULE.bazel" ] &&
-             [ ! -f "$kernel_workspace/WORKSPACE" ] &&
-             [ ! -f "$kernel_workspace/WORKSPACE.bazel" ] &&
-             [ ! -f "$kernel_workspace/bazel.WORKSPACE" ]; then
-            fail "KERNEL_WORKSPACE is not a Kleaf workspace (no MODULE.bazel/WORKSPACE marker): $kernel_workspace"
-          fi
-
-          [ -n "$kernel_build_label" ] || fail "KERNEL_BUILD_LABEL is unset; configure the exact device kernel_build label"
-          validate_label KERNEL_BUILD_LABEL "$kernel_build_label"
-          validate_label KERNEL_HEADERS_LABEL "$kernel_headers_label"
-
-          [ -n "$ndk" ] || fail "ANDROID_NDK_HOME is unset; configure vars.YUKARI_ANDROID_NDK_HOME or runner env YUKARI_ANDROID_NDK_HOME"
-          case "$ndk" in
-            /*) ;;
-            *) fail "ANDROID_NDK_HOME must be an absolute Linux path: $ndk" ;;
+          case "$manifest_ref" in
+            *$'\n'*|*$'\r'*|*[!A-Za-z0-9._/-]*) fail "Invalid KERNEL_MANIFEST_REF: $manifest_ref" ;;
           esac
-          [ -x "$ndk/ndk-build" ] || fail "ndk-build is missing or not executable: $ndk/ndk-build"
-
-          [ -n "$magisk_include" ] || fail "MAGISK_INCLUDE is unset; configure vars.YUKARI_MAGISK_INCLUDE or runner env YUKARI_MAGISK_INCLUDE"
-          case "$magisk_include" in
-            /*) ;;
-            *) fail "MAGISK_INCLUDE must be an absolute Linux path: $magisk_include" ;;
+          case "$kernel_build_label" in
+            //[A-Za-z0-9_./:-]*) ;;
+            *) fail "Invalid KERNEL_BUILD_LABEL: $kernel_build_label" ;;
           esac
-          [ -s "$magisk_include/zygisk.hpp" ] || fail "Magisk zygisk.hpp is missing or empty: $magisk_include/zygisk.hpp"
+          case "$kernel_headers_label" in
+            //[A-Za-z0-9_./:-]*) ;;
+            *) fail "Invalid KERNEL_HEADERS_LABEL: $kernel_headers_label" ;;
+          esac
+          invalid_build=$(printf '%s' "$kernel_build_label" | tr -d 'A-Za-z0-9_./:-')
+          invalid_headers=$(printf '%s' "$kernel_headers_label" | tr -d 'A-Za-z0-9_./:-')
+          [ -z "$invalid_build" ] || fail "KERNEL_BUILD_LABEL contains unsupported characters"
+          [ -z "$invalid_headers" ] || fail "KERNEL_HEADERS_LABEL contains unsupported characters"
 
-          if [ -n "$bazel" ]; then
-            case "$bazel" in
-              */*) [ -x "$bazel" ] || fail "BAZEL is not executable: $bazel" ;;
-              *) command -v "$bazel" >/dev/null 2>&1 || fail "BAZEL is not on PATH: $bazel" ;;
-            esac
-          elif [ -x "$kernel_workspace/tools/bazel" ]; then
-            bazel="$kernel_workspace/tools/bazel"
-          else
-            bazel=$(command -v bazel || true)
-            [ -n "$bazel" ] || fail "No Bazel wrapper found; set YUKARI_BAZEL or provide KERNEL_WORKSPACE/tools/bazel"
-          fi
+          workspace="$RUNNER_TEMP/android-kernel-workspace"
+          rm -rf "$workspace"
+          mkdir -p "$workspace"
+          repo_bin="$RUNNER_TEMP/repo"
+          curl --fail --location --retry 3 --retry-all-errors \
+            https://storage.googleapis.com/git-repo-downloads/repo -o "$repo_bin"
+          chmod 0755 "$repo_bin"
+          (
+            cd "$workspace"
+            "$repo_bin" init --depth=1 \
+              -u "$manifest_url" -b "$manifest_ref" -q
+            "$repo_bin" sync -c --no-tags --optimized-fetch \
+              --prune --force-sync -j"$(nproc)"
+          )
 
-          [ -n "$abis" ] || fail "ABIS must contain at least one Android ABI"
+          [ -f "$workspace/MODULE.bazel" ] ||
+            [ -f "$workspace/WORKSPACE" ] ||
+            [ -f "$workspace/WORKSPACE.bazel" ] ||
+            [ -f "$workspace/bazel.WORKSPACE" ] ||
+            fail "Manifest did not produce a Kleaf workspace marker"
+          [ -x "$workspace/tools/bazel" ] || command -v bazel >/dev/null 2>&1 ||
+            fail "No workspace tools/bazel or Bazelisk executable was found"
 
-          # Pass the resolved values to the build step and make the selected
-          # configuration visible in the log for reproducibility.
           {
-            printf 'KERNEL_WORKSPACE=%s\n' "$kernel_workspace"
+            printf 'KERNEL_WORKSPACE=%s\n' "$workspace"
+            printf 'KERNEL_MANIFEST_URL=%s\n' "$manifest_url"
+            printf 'KERNEL_MANIFEST_REF=%s\n' "$manifest_ref"
             printf 'KERNEL_BUILD_LABEL=%s\n' "$kernel_build_label"
             printf 'KERNEL_HEADERS_LABEL=%s\n' "$kernel_headers_label"
-            printf 'ANDROID_NDK_HOME=%s\n' "$ndk"
+          } >> "$GITHUB_ENV"
+          echo "Kernel workspace prepared at $workspace"
+          df -h "$workspace"
+
+      - name: Fetch Magisk Zygisk header
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          header_url="${MAGISK_ZYGISK_URL:-https://raw.githubusercontent.com/topjohnwu/Magisk/v28.1/native/src/core/zygisk/zygisk.hpp}"
+          case "$header_url" in
+            *$'\n'*|*$'\r'*|*' '*) echo "MAGISK_ZYGISK_URL contains whitespace" >&2; exit 2 ;;
+            https://*) ;;
+            *) echo "MAGISK_ZYGISK_URL must use HTTPS: $header_url" >&2; exit 2 ;;
+          esac
+          if [ -n "${MAGISK_ZYGISK_SHA256:-}" ] &&
+             [[ ! "$MAGISK_ZYGISK_SHA256" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+            echo "MAGISK_ZYGISK_SHA256 must contain 64 hexadecimal characters" >&2
+            exit 2
+          fi
+          magisk_include="$RUNNER_TEMP/magisk/include"
+          mkdir -p "$magisk_include"
+          curl --fail --location --retry 3 --retry-all-errors \
+            "$header_url" -o "$magisk_include/zygisk.hpp"
+          [ -s "$magisk_include/zygisk.hpp" ] || { echo "Downloaded zygisk.hpp is empty" >&2; exit 2; }
+          if [ -n "${MAGISK_ZYGISK_SHA256:-}" ]; then
+            printf '%s  %s\n' "$MAGISK_ZYGISK_SHA256" "$magisk_include/zygisk.hpp" | sha256sum -c -
+          fi
+          {
             printf 'MAGISK_INCLUDE=%s\n' "$magisk_include"
-            printf 'BAZEL=%s\n' "$bazel"
-            printf 'ABIS=%s\n' "$abis"
+            printf 'MAGISK_ZYGISK_URL=%s\n' "$header_url"
           } >> "$GITHUB_ENV"
 
-          echo "CI preflight: Android 14 / GKI 6.1 inputs validated"
-          echo "CI preflight: kernel label=$kernel_build_label headers=$kernel_headers_label abis=$abis"
+      - name: Validate cloud build inputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          workspace="$KERNEL_WORKSPACE"
+          bazel="$workspace/tools/bazel"
+          if [ ! -x "$bazel" ]; then bazel="$(command -v bazel)"; fi
+          [ -x "$ANDROID_NDK_HOME/ndk-build" ] || { echo "ndk-build missing" >&2; exit 2; }
+          [ -s "$MAGISK_INCLUDE/zygisk.hpp" ] || { echo "zygisk.hpp missing" >&2; exit 2; }
+          abis="${ABIS:-arm64-v8a}"
+          case "$abis" in
+            ''|*$'\n'*|*$'\r'*|*[!A-Za-z0-9_,.-]*)
+              echo "ABIS must be a comma-separated ABI list" >&2
+              exit 2
+              ;;
+          esac
+          "$bazel" --output_user_root="$RUNNER_TEMP/bazel" query \
+            "$KERNEL_BUILD_LABEL" >/dev/null
+          "$bazel" --output_user_root="$RUNNER_TEMP/bazel" query \
+            "$KERNEL_HEADERS_LABEL" >/dev/null
+          printf 'BAZEL=%s\n' "$bazel" >> "$GITHUB_ENV"
+          printf 'BAZEL_OUTPUT_USER_ROOT=%s\n' "$RUNNER_TEMP/bazel" >> "$GITHUB_ENV"
+          printf 'ABIS=%s\n' "$abis" >> "$GITHUB_ENV"
+          echo "Cloud build inputs validated"
 
       - name: Build Yukari module
         shell: bash
