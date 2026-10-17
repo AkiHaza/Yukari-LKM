@@ -87,9 +87,15 @@ KERNEL_WORKSPACE=/path/to/ddk KERNEL_BUILD_LABEL=//common:kernel_aarch64 \
   ./build/build.sh
 ```
 
-The workflow accepts those paths as runner inputs and invokes the same script.
-A successful build proves compilation only; GKI KMI symbol availability,
-module signing, and device loading still need validation on the target image.
+The workflow runs on a self-hosted runner labelled `android-ddk`. Configure
+`YUKARI_KERNEL_WORKSPACE`, `YUKARI_KERNEL_BUILD_LABEL`,
+`YUKARI_ANDROID_NDK_HOME`, and `YUKARI_MAGISK_INCLUDE` as repository Variables
+or runner environment variables; optional headers, Bazel, and ABI variables
+are documented in [docs/build.md](docs/build.md). Manual workflow inputs can
+override those values. A preflight step validates all paths before invoking
+the same script. A successful build proves compilation only; GKI KMI symbol
+availability, module signing, and device loading still need validation on the
+target image.
 
 ## Verification
 

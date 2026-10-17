@@ -32,6 +32,44 @@ requires another wrapper. `OUT_DIR` selects the repository output directory.
 The label values are validated before being inserted into the staged BUILD
 file. The generated ZIP is `OUT_DIR/yukari-service-filter.zip`.
 
+## GitHub Actions
+
+The repository workflow runs on a self-hosted runner with the labels
+`self-hosted`, `linux`, and `android-ddk`. It uses the same `build/build.sh`
+entry point. Configure these repository Variables once, or export the matching
+`YUKARI_*` variables in the runner service environment:
+
+| Variable | Required | Value |
+| --- | --- | --- |
+| `YUKARI_KERNEL_WORKSPACE` | yes | Absolute path to the Android 14/GKI 6.1 Kleaf workspace |
+| `YUKARI_KERNEL_BUILD_LABEL` | yes | Exact device `kernel_build` Bazel label |
+| `YUKARI_KERNEL_HEADERS_LABEL` | no | Headers label; defaults to `//common:all_headers` |
+| `YUKARI_ANDROID_NDK_HOME` | yes | Absolute Android NDK directory containing `ndk-build` |
+| `YUKARI_MAGISK_INCLUDE` | yes | Absolute include directory containing `zygisk.hpp` |
+| `YUKARI_BAZEL` | no | Bazel wrapper; empty selects workspace `tools/bazel`, then `PATH` |
+| `YUKARI_ABIS` | no | Comma-separated ABIs; defaults to `arm64-v8a` |
+
+`workflow_dispatch` inputs are optional overrides and take precedence over
+repository Variables, which take precedence over runner environment variables.
+The workflow performs a preflight check for every required path, the Kleaf
+workspace marker, Bazel, the NDK compiler, and `zygisk.hpp` before invoking the
+build. No firmware-specific paths or kernel labels are invented by the
+workflow; the exact values must match the device image.
+
+For example, repository Variables can be set with the GitHub CLI from a
+trusted machine (replace the values with the runner's real paths):
+
+```sh
+gh variable set YUKARI_KERNEL_WORKSPACE --body /opt/android/gki-6.1
+gh variable set YUKARI_KERNEL_BUILD_LABEL --body //common:kernel_aarch64
+gh variable set YUKARI_ANDROID_NDK_HOME --body /opt/android-ndk
+gh variable set YUKARI_MAGISK_INCLUDE --body /opt/magisk/include
+```
+
+The local checkout in this repository does not contain a Linux Kleaf/NDK
+toolchain, so a successful GitHub Actions run still requires a registered
+`android-ddk` runner with those dependencies installed.
+
 The kernel module is intentionally fail-open on an unmodified GKI image. A
 successful build verifies compilation and packaging only; it does not provide
 Binder reply rewriting. KMI symbol availability, module signing, loading, and
