@@ -3,11 +3,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,15 +40,57 @@ std::string callerProcess() {
 
 uid_t callerUid() { return getuid(); }
 
+bool trustedFile(const char* path) {
+  struct stat info {};
+  return path != nullptr && lstat(path, &info) == 0 && S_ISREG(info.st_mode) && info.st_uid == 0 &&
+         (info.st_mode & 0022) == 0;
+}
+
 int usage() {
-  const char* message = "usage: service-proxy --exec /system/bin/service list [args...]\n";
+  const char* message =
+      "usage: service-proxy --exec /system/bin/service list [args...] | --sync\n";
   (void)write(STDERR_FILENO, message, std::strlen(message));
   return 64;
+}
+
+void publishResolvedUids(const yukari::FilterConfig& config) {
+  if (geteuid() != 0) return;
+  std::string source;
+  const char* config_paths[] = {"/data/adb/modules/Yukari/config.json",
+                                "/data/adb/modules/yukari-service-filter/config.json"};
+  for (const char* path : config_paths) {
+    if (!trustedFile(path)) continue;
+    std::ifstream input(path, std::ios::binary);
+    if (!input) continue;
+    source.assign((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (source.size() > 16384) source.clear();
+    break;
+  }
+  if (source.empty()) return;
+  const char* paths[] = {"/data/adb/modules/Yukari/config.uids",
+                         "/data/adb/modules/yukari-service-filter/config.uids"};
+  for (const char* path : paths) {
+    const std::string temporary = std::string(path) + ".tmp." + std::to_string(getpid());
+    std::ofstream output(temporary, std::ios::trunc | std::ios::binary);
+    if (!output) continue;
+    output << "YUKARI_RESOLVED_V1 " << source.size() << '\n';
+    output.write(source.data(), static_cast<std::streamsize>(source.size()));
+    output << '\n';
+    for (const uid_t uid : config.target_uids) output << static_cast<unsigned long>(uid) << '\n';
+    output.close();
+    (void)chmod(temporary.c_str(), 0644);
+    if (std::rename(temporary.c_str(), path) != 0) std::remove(temporary.c_str());
+  }
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--sync") == 0) {
+    const yukari::FilterConfig config = yukari::ServiceFilter::loadConfig();
+    publishResolvedUids(config);
+    return yukari::ServiceFilter::syncKernelConfig(config) ? 0 : 1;
+  }
   if (argc < 4 || std::strcmp(argv[1], "--exec") != 0 ||
       std::strcmp(argv[2], "/system/bin/service") != 0 ||
       std::strcmp(argv[3], "list") != 0) {

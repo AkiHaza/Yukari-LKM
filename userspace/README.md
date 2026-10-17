@@ -40,16 +40,28 @@ allowlist. `configFromEnvironment()` remains available only to host test
 fixtures; the injected module never accepts environment overrides because the
 target app controls its own environment.
 
-The Zygisk companion supplies process identity and command-surface glue. It
-does not parse Binder Parcels, and therefore does not claim to implement Java
-`ServiceManager.listServices()`, native `IServiceManager`, or direct
-`BINDER_WRITE_READ` filtering. The command hook only covers exact `service list`
-and `/system/bin/service list` calls that pass through the intercepted libc PLT
-entries; Runtime.exec JNI internals, direct syscalls, shell wrappers, and
-direct Binder clients are not established by the host tests. Those paths
-require a framework or vendor Binder reply hook with a versioned
-`IServiceManager` Parcel parser; the generic kernel probe in this repository
-fails open when that hook is unavailable.
+The Zygisk companion also has a conditional Android 14 (SDK 34) PLT hook for
+the exported `IPCThreadState::transact` symbol. It validates the
+`IServiceManager` request header and applies the shared Parcel codec to list,
+debug-info, name-query, and declaration-query replies. Hidden names therefore
+produce the same not-found result through list and by-name APIs. PLT cannot
+intercept a libbinder internal direct call that does not import the symbol.
+The hook is fail-open on other SDK versions, missing symbols, malformed
+Parcels, unsuccessful replies, and unsupported object tables. The command hook
+still only covers exact `service list` and `/system/bin/service list` calls
+through intercepted libc entries; Runtime.exec JNI internals, direct syscalls,
+shell wrappers, and direct `BINDER_WRITE_READ` clients require a framework or
+vendor Binder integration.
+
+The injected process reads `/data/adb/modules/Yukari/config.json` directly.
+`/dev/yukari_filter` is an optional best-effort control channel used by the
+root-side sync helper; its absence never disables the independent userspace
+policy.
+
+After specialization, the module invokes `ServiceManager.listServices()` once
+through JNI. The hook marks the process self-check effective only after the
+real reply has passed Parcel replay and publication checks; installation by
+itself is reported as pending.
 
 ## Building
 

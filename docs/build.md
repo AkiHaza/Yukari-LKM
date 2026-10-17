@@ -38,3 +38,22 @@ Binder reply rewriting. KMI symbol availability, module signing, loading, and
 the target-device service-view tests still require the matching Android image.
 This repository's Windows checkout does not include a
 Kleaf/NDK toolchain, so no real Android 14/GKI 6.1 build is claimed here.
+
+## libbinder PLT inspection
+
+Before enabling the userspace Binder hook on a device image, inspect that
+image's actual `libbinder.so` with the host-side script:
+
+```sh
+tools/inspect_libbinder.sh /path/to/device/libbinder.so
+```
+
+The script prints stable `KEY=VALUE` fields for the ELF `SYMBOLIC` and
+`BIND_NOW` flags, the `IPCThreadState::transact` PLT relocation, and the call
+form found in `BpServiceManager`. It ends with `CONCLUSION=PLT_HOOK_POSSIBLE`
+or `CONCLUSION=PLT_HOOK_LIKELY_INEFFECTIVE`; missing binutils, an unreadable
+file, or an uninspectable section produces `CONCLUSION=unknown` and a
+non-zero status. `CONCLUSION_TEXT` provides the corresponding human-readable
+"PLT hook may work" or "PLT hook likely ineffective" explanation.
+Set `READELF` and `OBJDUMP` when cross-inspecting with a toolchain-specific
+binutils pair. The script never assumes a firmware or mount path.

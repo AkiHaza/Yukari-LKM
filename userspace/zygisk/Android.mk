@@ -9,8 +9,9 @@ endif
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := yukari
-LOCAL_SRC_FILES := src/service_filter.cpp src/native_hooks.cpp src/zygisk_module.cpp
+LOCAL_SRC_FILES := src/service_filter.cpp src/native_hooks.cpp src/binder_hooks.cpp ../../src/parcel.c src/zygisk_module.cpp
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../../include
 ifneq ($(MAGISK_INCLUDE),)
 LOCAL_C_INCLUDES += $(MAGISK_INCLUDE)
 endif
@@ -22,6 +23,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := service-proxy
 LOCAL_SRC_FILES := ../service-proxy/service_proxy.cpp src/service_filter.cpp
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../../include
 ifneq ($(MAGISK_INCLUDE),)
 LOCAL_C_INCLUDES += $(MAGISK_INCLUDE)
 endif

@@ -117,15 +117,19 @@ static enum yukari_parcel_status read_name(const yukari_u8 *data,
 }
 
 static int matches(const yukari_u8 *data, const struct name_view *name,
-		   const char *const *tokens, size_t token_count)
+		   const char *const *tokens, size_t token_count,
+		   unsigned int match_mode)
 {
 	size_t t, offset, i, length;
 
 	for (t = 0; t < token_count; ++t) {
 		length = strlen(tokens[t]); /* Validated and bounded first. */
-		if (length > name->units)
+		if (length > name->units ||
+		    (match_mode == YUKARI_PARCEL_MATCH_EXACT && length != name->units))
 			continue;
 		for (offset = 0; offset <= name->units - length; ++offset) {
+			if (match_mode == YUKARI_PARCEL_MATCH_PREFIX && offset != 0)
+				break;
 			for (i = 0; i < length; ++i)
 				if (ascii_lower(get16(data + name->data +
 						  (offset + i) * 2u)) !=
@@ -133,6 +137,8 @@ static int matches(const yukari_u8 *data, const struct name_view *name,
 					break;
 			if (i == length)
 				return 1;
+			if (match_mode != YUKARI_PARCEL_MATCH_SUBSTRING)
+				break;
 		}
 	}
 	return 0;
@@ -188,20 +194,20 @@ static int partially_overlaps(const void *input, size_t input_size,
 	return a < b ? b - a < input_size : a - b < output_size;
 }
 
-static enum yukari_parcel_status filter_vector(
-	const void *input, size_t input_size, void *output, size_t capacity,
+static enum yukari_parcel_status scan_vector(
+	const void *input, size_t input_size,
 	const char *const *tokens, size_t token_count,
-	struct yukari_parcel_result *result, int debug)
+			struct yukari_parcel_result *result, int debug,
+			unsigned int match_mode)
 {
 	const yukari_u8 *source = input;
-	yukari_u8 *destination = output;
 	enum yukari_parcel_status status;
 	struct yukari_parcel_result computed = { 8u, 0u, 0u };
 	struct entry_view entry;
 	yukari_u32 count, index;
-	size_t cursor, write_cursor;
+	size_t cursor;
 
-	if (!input || !output || !result)
+	if (!input || !result)
 		return YUKARI_PARCEL_INVALID;
 	if (input_size > YUKARI_PARCEL_MAX_BYTES)
 		return YUKARI_PARCEL_LIMIT;
@@ -210,6 +216,8 @@ static enum yukari_parcel_status filter_vector(
 	status = validate_tokens(tokens, token_count);
 	if (status != YUKARI_PARCEL_OK)
 		return status;
+	if (match_mode > YUKARI_PARCEL_MATCH_EXACT)
+		return YUKARI_PARCEL_UNSUPPORTED;
 	/* No rich exception/fat StrictMode/work-source headers are accepted. */
 	if (get32(source) != 0u)
 		return YUKARI_PARCEL_UNSUPPORTED;
@@ -223,7 +231,7 @@ static enum yukari_parcel_status filter_vector(
 		status = read_entry(source, input_size, cursor, debug, &entry);
 		if (status != YUKARI_PARCEL_OK)
 			return status;
-		if (matches(source, &entry.name, tokens, token_count)) {
+		if (matches(source, &entry.name, tokens, token_count, match_mode)) {
 			++computed.removed;
 		} else {
 			++computed.kept;
@@ -233,17 +241,42 @@ static enum yukari_parcel_status filter_vector(
 	}
 	if (cursor != input_size)
 		return YUKARI_PARCEL_INVALID;
+	*result = computed;
+	return YUKARI_PARCEL_OK;
+}
+
+static enum yukari_parcel_status filter_vector(
+	const void *input, size_t input_size, void *output, size_t capacity,
+	const char *const *tokens, size_t token_count,
+			struct yukari_parcel_result *result, int debug,
+			unsigned int match_mode)
+{
+	const yukari_u8 *source = input;
+	yukari_u8 *destination = output;
+	enum yukari_parcel_status status;
+	struct yukari_parcel_result computed;
+	struct entry_view entry;
+	yukari_u32 count, index;
+	size_t cursor, write_cursor;
+
+	if (!input || !output || !result)
+		return YUKARI_PARCEL_INVALID;
+	status = scan_vector(input, input_size, tokens, token_count, &computed,
+				     debug, match_mode);
+	if (status != YUKARI_PARCEL_OK)
+		return status;
 	if (capacity < computed.size)
 		return YUKARI_PARCEL_NO_SPACE;
 	if ((input == output && token_count != 0) ||
 	    partially_overlaps(input, input_size, output, computed.size))
 		return YUKARI_PARCEL_INVALID;
 	/* Full validation precedes the first write, including in-place use. */
+	count = get32(source + 4u);
 	cursor = write_cursor = 8u;
 	for (index = 0; index < count; ++index) {
 		/* Stable input was checked above; compaction never reaches ahead. */
 		(void)read_entry(source, input_size, cursor, debug, &entry);
-		if (!matches(source, &entry.name, tokens, token_count)) {
+		if (!matches(source, &entry.name, tokens, token_count, match_mode)) {
 			memmove(destination + write_cursor, source + cursor,
 				entry.end - cursor);
 			write_cursor += entry.end - cursor;
@@ -262,7 +295,7 @@ enum yukari_parcel_status yukari_parcel_filter_strings(
 	struct yukari_parcel_result *result)
 {
 	return filter_vector(input, input_size, output, capacity, tokens,
-			     token_count, result, 0);
+			     token_count, result, 0, YUKARI_PARCEL_MATCH_SUBSTRING);
 }
 
 enum yukari_parcel_status yukari_parcel_filter_debug_info(
@@ -271,7 +304,100 @@ enum yukari_parcel_status yukari_parcel_filter_debug_info(
 	struct yukari_parcel_result *result)
 {
 	return filter_vector(input, input_size, output, capacity, tokens,
-			     token_count, result, 1);
+			     token_count, result, 1, YUKARI_PARCEL_MATCH_SUBSTRING);
+}
+
+enum yukari_parcel_status yukari_parcel_filter_strings_mode(
+	const void *input, size_t input_size, void *output, size_t capacity,
+	const char *const *tokens, size_t token_count, unsigned int match_mode,
+	struct yukari_parcel_result *result)
+{
+	return filter_vector(input, input_size, output, capacity, tokens,
+			     token_count, result, 0, match_mode);
+}
+
+enum yukari_parcel_status yukari_parcel_filter_debug_info_mode(
+	const void *input, size_t input_size, void *output, size_t capacity,
+	const char *const *tokens, size_t token_count, unsigned int match_mode,
+	struct yukari_parcel_result *result)
+{
+	return filter_vector(input, input_size, output, capacity, tokens,
+			     token_count, result, 1, match_mode);
+}
+
+enum yukari_parcel_status yukari_parcel_validate_strings(
+	const void *input, size_t input_size, struct yukari_parcel_result *result)
+{
+	return scan_vector(input, input_size, NULL, 0u, result, 0,
+			  YUKARI_PARCEL_MATCH_SUBSTRING);
+}
+
+enum yukari_parcel_status yukari_parcel_validate_debug_info(
+	const void *input, size_t input_size, struct yukari_parcel_result *result)
+{
+	return scan_vector(input, input_size, NULL, 0u, result, 1,
+			  YUKARI_PARCEL_MATCH_SUBSTRING);
+}
+
+enum yukari_parcel_status yukari_parcel_match_utf16_le(
+	const void *utf16_le, size_t units, const char *const *tokens,
+	size_t token_count, unsigned int match_mode, int *matched)
+{
+	const yukari_u8 *data = utf16_le;
+	struct name_view name = { 0u, units, units * 2u };
+	enum yukari_parcel_status status;
+	size_t i;
+
+	if (!matched || (units != 0u && !data))
+		return YUKARI_PARCEL_INVALID;
+	if (units > YUKARI_PARCEL_MAX_NAME_UNITS)
+		return YUKARI_PARCEL_LIMIT;
+	status = validate_tokens(tokens, token_count);
+	if (status != YUKARI_PARCEL_OK)
+		return status;
+	if (match_mode > YUKARI_PARCEL_MATCH_EXACT)
+		return YUKARI_PARCEL_UNSUPPORTED;
+	for (i = 0u; i < units; ++i) {
+		yukari_u16 c = get16(data + i * 2u);
+
+		if (c >= 0xd800u && c <= 0xdbffu) {
+			if (++i == units)
+				return YUKARI_PARCEL_INVALID;
+			c = get16(data + i * 2u);
+			if (c < 0xdc00u || c > 0xdfffu)
+				return YUKARI_PARCEL_INVALID;
+		} else if (c >= 0xdc00u && c <= 0xdfffu) {
+			return YUKARI_PARCEL_INVALID;
+		}
+	}
+	*matched = matches(data, &name, tokens, token_count, match_mode);
+	return YUKARI_PARCEL_OK;
+}
+
+enum yukari_parcel_status yukari_parcel_match_string16(
+	const void *input, size_t input_size, size_t offset,
+	const char *const *tokens, size_t token_count, unsigned int match_mode,
+	int *matched, size_t *end)
+{
+	const yukari_u8 *data = input;
+	struct name_view name;
+	enum yukari_parcel_status status;
+
+	if (!input || !matched || !end)
+		return YUKARI_PARCEL_INVALID;
+	if (input_size > YUKARI_PARCEL_MAX_BYTES)
+		return YUKARI_PARCEL_LIMIT;
+	status = validate_tokens(tokens, token_count);
+	if (status != YUKARI_PARCEL_OK)
+		return status;
+	if (match_mode > YUKARI_PARCEL_MATCH_EXACT)
+		return YUKARI_PARCEL_UNSUPPORTED;
+	status = read_name(data, input_size, offset, &name);
+	if (status != YUKARI_PARCEL_OK)
+		return status;
+	*matched = matches(data, &name, tokens, token_count, match_mode);
+	*end = name.end;
+	return YUKARI_PARCEL_OK;
 }
 
 enum yukari_parcel_status yukari_parcel_make_null_binder(

@@ -17,8 +17,13 @@ struct FilterConfig {
   std::vector<uid_t> target_uids;
   // Comma separated process names.  An empty list disables name matching.
   std::vector<std::string> target_processes;
-  // Case-insensitive tokens in service names that are hidden for a target.
+  // Case-insensitive patterns in service names that are hidden for a target.
   std::vector<std::string> hidden_tokens;
+  // Package names are resolved to UIDs from the root-owned package registry.
+  std::vector<std::string> target_packages;
+  enum class MatchMode { kPrefix, kSubstring, kExact } match_mode = MatchMode::kSubstring;
+  bool kernel_hook_enabled = true;
+  bool userspace_hook_enabled = true;
 };
 
 class ServiceFilter final {
@@ -30,9 +35,17 @@ class ServiceFilter final {
   // Loads the optional line-oriented module config.  Unknown keys are ignored
   // so the file can be extended without breaking older binaries.
   static FilterConfig configFromFile(const char* path);
+  // Parses the JSON module configuration. The parser intentionally accepts
+  // only the small schema used by this module and fails closed on malformed
+  // input. Package names are resolved to exact UIDs before returning.
+  static FilterConfig configFromJsonFile(const char* path);
   // Reads the root-owned module configuration file. Invalid or writable files
   // disable caller matching rather than accepting app-controlled overrides.
   static FilterConfig loadConfig();
+
+  // Best-effort control-plane update. A missing/unavailable LKM is harmless:
+  // userspace filtering continues and the kernel side remains fail-open.
+  static bool syncKernelConfig(const FilterConfig& config);
 
   explicit ServiceFilter(FilterConfig config);
 

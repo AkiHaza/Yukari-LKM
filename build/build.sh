@@ -81,6 +81,7 @@ fi
 mkdir "$stage_dir"
 trap 'rm -rf "$stage_dir"' EXIT HUP INT TERM
 cp "$repo_dir/kernel/yukari_filter.c" "$stage_dir/yukari_filter.c"
+cp "$repo_dir/include/yukari/control.h" "$stage_dir/control.h"
 cp "$repo_dir/kernel/Kconfig" "$stage_dir/Kconfig"
 sed "s|kernel_build = \"//common:kernel_aarch64\"|kernel_build = \"$kernel_build_label\"|" \
   "$repo_dir/kernel/BUILD.bazel" | sed "s|\"//common:all_headers\"|\"$kernel_headers_label\"|" > "$stage_dir/BUILD.bazel"

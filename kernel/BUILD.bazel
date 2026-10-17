@@ -6,7 +6,7 @@ package(default_visibility = ["//visibility:public"])
 # substitutes the requested kernel_build label before invoking Bazel.
 ddk_module(
     name = "yukari_filter",
-    srcs = ["yukari_filter.c"],
+    srcs = ["yukari_filter.c", "control.h"],
     kconfig = "Kconfig",
     out = "yukari_filter.ko",
     kernel_build = "//common:kernel_aarch64",

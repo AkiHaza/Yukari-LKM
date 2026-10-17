@@ -1,4 +1,5 @@
 #include "native_hooks.h"
+#include "binder_hooks.h"
 #include "service_filter.h"
 
 #if __has_include(<zygisk.hpp>)
@@ -54,7 +55,9 @@ class YukariModule final : public zygisk::ModuleBase {
     }
   }
 
-  void postAppSpecialize(const zygisk::AppSpecializeArgs*) override {}
+  void postAppSpecialize(const zygisk::AppSpecializeArgs*) override {
+    if (target_) yukari::runBinderSelfCheck(static_cast<void*>(env_));
+  }
 
  private:
   zygisk::Api* api_ = nullptr;

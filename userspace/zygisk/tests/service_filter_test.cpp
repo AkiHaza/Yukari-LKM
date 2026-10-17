@@ -1,6 +1,8 @@
 #include "service_filter.h"
 
 #include <cassert>
+#include <cstdio>
+#include <fstream>
 #include <string>
 
 int main() {
@@ -66,6 +68,48 @@ int main() {
          "Found services:\n"
          "android.hardware.camera: [x]\n");
   assert(filter.shouldHide("malformed lineage output"));
+
+  yukari::FilterConfig prefix_config;
+  prefix_config.target_uids = {10234};
+  prefix_config.hidden_tokens = {"vendor."};
+  prefix_config.match_mode = yukari::FilterConfig::MatchMode::kPrefix;
+  yukari::ServiceFilter prefix_filter(prefix_config);
+  assert(prefix_filter.shouldHide("vendor.lineage.power"));
+  assert(!prefix_filter.shouldHide("android.vendor.power"));
+
+  yukari::FilterConfig exact_config = prefix_config;
+  exact_config.hidden_tokens = {"vendor.lineage.power"};
+  exact_config.match_mode = yukari::FilterConfig::MatchMode::kExact;
+  yukari::ServiceFilter exact_filter(exact_config);
+  assert(exact_filter.shouldHide("vendor.lineage.power"));
+  assert(!exact_filter.shouldHide("vendor.lineage.power.extra"));
+
+  const char* config_path = "service_filter_test_config.json";
+  {
+    std::ofstream config_file(config_path);
+    config_file << "{\"target_uids\":[10234],\"target_packages\":[\"com.example\\/target\"],"
+                   "\"filter_patterns\":[\"Lineage\"],"
+                   "\"match_mode\":\"exact\",\"kernel_hook_enabled\":false,"
+                   "\"userspace_hook_enabled\":true}";
+  }
+  const yukari::FilterConfig json_config = yukari::ServiceFilter::configFromJsonFile(config_path);
+  std::remove(config_path);
+  assert(json_config.target_uids.size() == 1 && json_config.target_uids[0] == 10234);
+  assert(json_config.target_packages.size() == 1 &&
+         json_config.target_packages[0] == "com.example/target");
+  assert(json_config.match_mode == yukari::FilterConfig::MatchMode::kExact);
+  assert(!json_config.kernel_hook_enabled && json_config.userspace_hook_enabled);
+  assert(json_config.hidden_tokens.size() == 1 && json_config.hidden_tokens[0] == "lineage");
+
+  {
+    std::ofstream config_file(config_path);
+    config_file << "{\"target_uids\":[10234,],}";
+  }
+  const yukari::FilterConfig malformed_json =
+      yukari::ServiceFilter::configFromJsonFile(config_path);
+  std::remove(config_path);
+  assert(malformed_json.target_uids.empty());
+  assert(!malformed_json.userspace_hook_enabled);
   return 0;
 }
 

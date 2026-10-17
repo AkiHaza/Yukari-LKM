@@ -43,6 +43,7 @@ package-only:
 		"$(DIST)/yukari-service-filter/config"
 	cp zygisk/module.prop "$(DIST)/yukari-service-filter/module.prop"
 	cp zygisk/config/targets.conf "$(DIST)/yukari-service-filter/config/targets.conf"
+	if [ -f zygisk/config.json ]; then cp zygisk/config.json "$(DIST)/yukari-service-filter/config.json"; fi
 	chmod 0644 "$(DIST)/yukari-service-filter/module.prop" "$(DIST)/yukari-service-filter/config/targets.conf"
 	cp "$(OUT)/libs/$(FIRST_ABI)/service-proxy" "$(DIST)/yukari-service-filter/bin/service-proxy"
 	chmod 0755 "$(DIST)/yukari-service-filter/bin/service-proxy"

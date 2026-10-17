@@ -9,7 +9,10 @@ The repository contains two layers:
 
 * `userspace/` contains the filtering core, a `service list` proxy, and the
   Zygisk integration point. The proxy keeps command output consistent with
-  the core filter.
+  the core filter. An optional Android 14 libbinder `IPCThreadState::transact`
+  PLT hook applies the same bounded Parcel codec to list, debug-info, name,
+  and declaration replies when the caller imports the exported symbol and
+  runtime checks pass.
 * `kernel/` contains a GKI-loadable, fail-open Binder probe. A stock GKI LKM
   cannot safely rewrite a Binder reply after `binder_ioctl_write_read()` and
   preserve Parcel object offsets. Reply rewriting requires a vendor Binder
@@ -17,10 +20,11 @@ The repository contains two layers:
 
 This boundary is deliberate. It prevents a module from corrupting Binder or
 silently returning a different result on one Android release than another.
-An implementation claiming complete coverage for Java `ServiceManager`,
-native `IServiceManager`, and hand-written `BINDER_WRITE_READ` must provide a
-verified framework-side or vendor-driver hook and tests for that exact Android
-release. The generic probe does not make that claim.
+The userspace hook also applies the same hidden-name decision to
+`getService`, `checkService`, and `isDeclared`, while direct
+`BINDER_WRITE_READ` remains outside the injected process boundary and fails
+open. See [docs/coverage.md](docs/coverage.md) for the complete matrix and
+verification status.
 
 ## Configuration
 
@@ -43,6 +47,27 @@ provisioning from the package's verified UID and process list. The file is
 root-owned and readable by the injected app, but not writable by it. Do not
 use an untrusted app-provided environment variable as authorization in a
 production module.
+
+An optional root-owned `/data/adb/modules/Yukari/config.json` provides the
+extended schema:
+
+```json
+{
+  "target_uids": [10234],
+  "target_packages": ["com.example.target"],
+  "filter_patterns": ["lineage"],
+  "match_mode": "substring",
+  "kernel_hook_enabled": false,
+  "userspace_hook_enabled": true
+}
+```
+
+Package names are resolved through `/data/system/packages.list`; resolved UIDs
+are used directly by the userspace selector and may also be sent to the
+root-only `/dev/yukari_filter` control device. The ioctl is best effort and
+optional. The stock-GKI kernel module stores the validated snapshot for a
+future vendor Binder hook and remains fail-open. If `config.json` is absent,
+`targets.conf` keeps the legacy behavior.
 
 ## Build
 

@@ -34,6 +34,12 @@ enum yukari_parcel_status {
 	YUKARI_PARCEL_UNSUPPORTED
 };
 
+enum yukari_parcel_match_mode {
+	YUKARI_PARCEL_MATCH_PREFIX = 0,
+	YUKARI_PARCEL_MATCH_SUBSTRING = 1,
+	YUKARI_PARCEL_MATCH_EXACT = 2
+};
+
 struct yukari_parcel_result {
 	size_t size;
 	yukari_u32 kept;
@@ -45,9 +51,11 @@ struct yukari_parcel_result {
  * independently verify the transaction method, successful transport status,
  * and an empty Binder object-offset table before filtering either vector.
  *
- * Tokens are nonempty NUL-terminated literal ASCII strings, matched as
- * case-insensitive substrings of validated UTF-16 names. token_count == 0
- * copies a validated reply without filtering. No allocation is performed.
+ * The legacy filter entry points use case-insensitive substring matching.
+ * The *_mode variants below additionally support prefix and exact matching.
+ * Tokens are nonempty NUL-terminated literal ASCII strings matched against
+ * validated UTF-16 names. token_count == 0 copies a validated reply without
+ * filtering. No allocation is performed.
  * Input/output must be disjoint when filtering is requested; with zero tokens
  * an exact in-place validated copy is allowed. Partial overlap is rejected.
  * On every error output and result are untouched. On success bytes beyond
@@ -68,6 +76,43 @@ enum yukari_parcel_status yukari_parcel_filter_debug_info(
 	const void *input, size_t input_size, void *output, size_t capacity,
 	const char *const *tokens, size_t token_count,
 	struct yukari_parcel_result *result);
+
+enum yukari_parcel_status yukari_parcel_filter_strings_mode(
+	const void *input, size_t input_size, void *output, size_t capacity,
+	const char *const *tokens, size_t token_count, unsigned int match_mode,
+	struct yukari_parcel_result *result);
+
+enum yukari_parcel_status yukari_parcel_filter_debug_info_mode(
+	const void *input, size_t input_size, void *output, size_t capacity,
+	const char *const *tokens, size_t token_count, unsigned int match_mode,
+	struct yukari_parcel_result *result);
+
+/*
+ * Read-only replay validators for a reply that has already been rewritten.
+ * They walk the same vector/UTF-16 parser as the filtering entry points and
+ * report the count and exact byte end position without writing to input.
+ * Parcel object-table validation remains the caller's responsibility; a
+ * caller must reject non-empty mObjects before publishing a rewrite.
+ */
+enum yukari_parcel_status yukari_parcel_validate_strings(
+	const void *input, size_t input_size, struct yukari_parcel_result *result);
+
+enum yukari_parcel_status yukari_parcel_validate_debug_info(
+	const void *input, size_t input_size, struct yukari_parcel_result *result);
+
+/* Match one already-decoded UTF-16LE service name with the shared pattern
+ * semantics.  `units` is a UTF-16 code-unit count, never a byte count. */
+enum yukari_parcel_status yukari_parcel_match_utf16_le(
+	const void *utf16_le, size_t units, const char *const *tokens,
+	size_t token_count, unsigned int match_mode, int *matched);
+
+/* Parse and match a Parcel String16 at `offset`; `end` receives the padded
+ * byte offset immediately after it, allowing the caller to validate any
+ * method-specific trailing fields before publishing a rewrite. */
+enum yukari_parcel_status yukari_parcel_match_string16(
+	const void *input, size_t input_size, size_t offset,
+	const char *const *tokens, size_t token_count, unsigned int match_mode,
+	int *matched, size_t *end);
 
 /*
  * Produce a successful getService/checkService reply with a null Binder.

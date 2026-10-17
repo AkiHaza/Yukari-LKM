@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(yukari_service_filter LANGUAGES CXX)
+project(yukari_service_filter LANGUAGES C CXX)
 
 option(YUKARI_REQUIRE_ZYGISK "Require Magisk's zygisk.hpp for the injected Android target" OFF)
 set(MAGISK_INCLUDE "" CACHE PATH "Magisk include directory containing zygisk.hpp")
@@ -14,9 +14,12 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_library(yukari_filter SHARED
   src/service_filter.cpp
   src/native_hooks.cpp
+  src/binder_hooks.cpp
+  ../../src/parcel.c
   src/zygisk_module.cpp
 )
 target_include_directories(yukari_filter PUBLIC include)
+target_include_directories(yukari_filter PUBLIC "${PROJECT_SOURCE_DIR}/../../include")
 if(MAGISK_INCLUDE)
   target_include_directories(yukari_filter PUBLIC "${MAGISK_INCLUDE}")
 endif()
@@ -26,6 +29,7 @@ set_target_properties(yukari_filter PROPERTIES OUTPUT_NAME yukari)
 
 add_executable(service-proxy ../service-proxy/service_proxy.cpp src/service_filter.cpp)
 target_include_directories(service-proxy PRIVATE include)
+target_include_directories(service-proxy PRIVATE "${PROJECT_SOURCE_DIR}/../../include")
 target_compile_options(service-proxy PRIVATE -Wall -Wextra -Werror=return-type)
 
 option(YUKARI_BUILD_TESTS "Build host-side ServiceFilter tests" OFF)
@@ -33,6 +37,7 @@ if(YUKARI_BUILD_TESTS)
   enable_testing()
   add_executable(service_filter_test tests/service_filter_test.cpp src/service_filter.cpp)
   target_include_directories(service_filter_test PRIVATE include)
+  target_include_directories(service_filter_test PRIVATE "${PROJECT_SOURCE_DIR}/../../include")
   add_test(NAME service_filter_test COMMAND service_filter_test)
 endif()
 

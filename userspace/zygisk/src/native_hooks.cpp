@@ -1,4 +1,6 @@
 #include "native_hooks.h"
+#include "binder_hooks.h"
+#include "service_filter.h"
 
 #include <dlfcn.h>
 #include <spawn.h>
@@ -80,6 +82,22 @@ std::vector<ElfIdentity> loadedElfs() {
 #endif
 
 void* resolve(const char* symbol) { return dlsym(RTLD_NEXT, symbol); }
+
+bool trustedExecutable(const char* path) {
+  struct stat info {};
+  return path != nullptr && lstat(path, &info) == 0 && S_ISREG(info.st_mode) &&
+         info.st_uid == 0 && (info.st_mode & 0022) == 0 && (info.st_mode & 0111) != 0;
+}
+
+std::string proxyPath() {
+  constexpr const char* paths[] = {
+      "/data/adb/modules/Yukari/bin/service-proxy",
+      "/data/adb/modules/yukari-service-filter/bin/service-proxy",
+  };
+  for (const char* path : paths)
+    if (trustedExecutable(path)) return path;
+  return {};
+}
 
 bool isServiceExecutable(const char* path) {
   return path != nullptr &&
@@ -220,25 +238,33 @@ void hookSymbol(const char* name, T replacement, T* original) {
 
 void installNativeHooks(::zygisk::Api* api, const char* caller_process) {
   g_caller_process = caller_process == nullptr ? std::string() : caller_process;
-  g_proxy_path = "/data/adb/modules/yukari-service-filter/bin/service-proxy";
+  g_proxy_path = proxyPath();
+  const FilterConfig config = ServiceFilter::loadConfig();
 #if YUKARI_HAS_ZYGISK_API
   if (api != nullptr) {
     bool originals_saved = false;
     for (const ElfIdentity& elf : loadedElfs()) {
       api->pltHookRegister(elf.device, elf.inode, "execve",
                            reinterpret_cast<void*>(hooked_execve),
-                           originals_saved ? nullptr : reinterpret_cast<void**>(&g_execve));
+                           originals_saved ? nullptr :
+                               reinterpret_cast<void**>(&g_execve));
       api->pltHookRegister(elf.device, elf.inode, "posix_spawn",
                            reinterpret_cast<void*>(hooked_posix_spawn),
-                           originals_saved ? nullptr : reinterpret_cast<void**>(&g_posix_spawn));
+                           originals_saved ? nullptr :
+                               reinterpret_cast<void**>(&g_posix_spawn));
       api->pltHookRegister(elf.device, elf.inode, "system",
                            reinterpret_cast<void*>(hooked_system),
-                           originals_saved ? nullptr : reinterpret_cast<void**>(&g_system));
+                           originals_saved ? nullptr :
+                               reinterpret_cast<void**>(&g_system));
       api->pltHookRegister(elf.device, elf.inode, "popen",
                            reinterpret_cast<void*>(hooked_popen),
-                           originals_saved ? nullptr : reinterpret_cast<void**>(&g_popen));
+                           originals_saved ? nullptr :
+                               reinterpret_cast<void**>(&g_popen));
       originals_saved = true;
     }
+    if (config.userspace_hook_enabled)
+      installBinderHooks(api, config.hidden_tokens,
+                         static_cast<unsigned int>(config.match_mode));
     (void)api->pltHookCommit();
     return;
   }

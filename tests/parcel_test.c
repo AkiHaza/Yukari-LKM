@@ -332,6 +332,63 @@ static void test_corrupt_lengths_counts_and_overlap(void)
 					      tokens, 1u, &result) == YUKARI_PARCEL_INVALID);
 }
 
+static void test_match_modes(void)
+{
+	unsigned char input[256] = {0}, output[256] = {0};
+	const char *prefix_token[] = {"vendor."};
+	const char *exact_token[] = {"vendor.lineage"};
+	struct yukari_parcel_result result;
+	size_t size = make_strings(input);
+
+	assert(yukari_parcel_filter_strings_mode(input, size, output, sizeof(output),
+						 prefix_token, 1u, YUKARI_PARCEL_MATCH_PREFIX,
+						 &result) == YUKARI_PARCEL_OK);
+	assert(result.kept == 2u && result.removed == 1u);
+	assert(yukari_parcel_filter_strings_mode(input, size, output, sizeof(output),
+						 exact_token, 1u, YUKARI_PARCEL_MATCH_EXACT,
+						 &result) == YUKARI_PARCEL_OK);
+	assert(result.kept == 2u && result.removed == 1u);
+	assert(yukari_parcel_filter_strings_mode(input, size, output, sizeof(output),
+						 exact_token, 1u, 99u, &result) ==
+		       YUKARI_PARCEL_UNSUPPORTED);
+}
+
+static void test_replay_validation_and_matcher(void)
+{
+	unsigned char input[256] = {0}, output[256] = {0};
+	const char *token[] = {"lineage"};
+	struct yukari_parcel_result filtered = {0}, replayed = {0};
+	int matched = 0;
+	size_t end = 0, size;
+
+	size = make_strings(input);
+	assert(yukari_parcel_filter_strings(input, size, output, sizeof(output),
+					   token, 1u, &filtered) == YUKARI_PARCEL_OK);
+	assert(yukari_parcel_validate_strings(output, filtered.size, &replayed) ==
+	       YUKARI_PARCEL_OK);
+	assert(replayed.size == filtered.size && replayed.kept == filtered.kept &&
+	       replayed.removed == 0u);
+	assert(yukari_parcel_match_string16(input, size, 8u, token, 1u,
+						 YUKARI_PARCEL_MATCH_SUBSTRING, &matched,
+						 &end) == YUKARI_PARCEL_OK);
+	assert(!matched && end > 8u);
+	/* The second entry is the lineage name in this fixture. */
+	assert(yukari_parcel_match_string16(input, size, end, token, 1u,
+						 YUKARI_PARCEL_MATCH_SUBSTRING, &matched,
+						 &end) == YUKARI_PARCEL_OK);
+	assert(matched);
+	put32(output + 4u, 99u);
+	assert(yukari_parcel_validate_strings(output, filtered.size, &replayed) !=
+	       YUKARI_PARCEL_OK);
+
+	size = make_debug(input);
+	assert(yukari_parcel_filter_debug_info(input, size, output, sizeof(output),
+						 token, 1u, &filtered) == YUKARI_PARCEL_OK);
+	assert(yukari_parcel_validate_debug_info(output, filtered.size, &replayed) ==
+	       YUKARI_PARCEL_OK);
+	assert(replayed.size == filtered.size && replayed.removed == 0u);
+}
+
 int main(void)
 {
 	test_strings();
@@ -342,6 +399,8 @@ int main(void)
 	test_invalid_is_unchanged();
 	test_limits_and_null_binder();
 	test_corrupt_lengths_counts_and_overlap();
+	test_match_modes();
+	test_replay_validation_and_matcher();
 	puts("parcel tests: ok");
 	return 0;
 }
